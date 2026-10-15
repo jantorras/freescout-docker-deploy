@@ -82,10 +82,11 @@ rand() { openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "${1:-24}"; }
 load_env() { [[ -f "$ENV_FILE" ]] && set -a && . "$ENV_FILE" && set +a || true; }
 
 ask() { # ask VAR "pregunta" [secret]
-  local var="$1" prompt="$2" secret="${3:-}" val=""
+  local var="$1" prompt="$2" secret="${3:-}" optional="${4:-}" val=""
   while [[ -z "$val" ]]; do
     if [[ -n "$secret" ]]; then read -r -s -p "$prompt: " val </dev/tty; echo
     else read -r -p "$prompt: " val </dev/tty; fi
+    [[ -n "$optional" ]] && break
   done
   printf -v "$var" '%s' "$val"
 }
@@ -96,6 +97,11 @@ configure() {
 
   if [[ "$MODE" == "reconfigure" || -z "${DOMAIN:-}" ]]; then
     ask DOMAIN "Nom de domini (p.ex. suport.exemple.com)"
+  fi
+  if [[ "$MODE" == "reconfigure" || -z "${TUNNEL_TOKEN+x}" ]]; then
+    echo "Token del túnel de Cloudflare (Zero Trust > Networks > Tunnels > el teu túnel > Docker)."
+    echo "És el text llarg després de '--token'. Deixa-ho buit per no instal·lar cloudflared."
+    ask TUNNEL_TOKEN "Token del túnel" secret optional
   fi
   if [[ "$MODE" == "reconfigure" || -z "${ACME_EMAIL:-}" ]]; then
     ask ACME_EMAIL "Email de l'administrador de FreeScout"
@@ -115,6 +121,7 @@ configure() {
   umask 077
   cat > "$ENV_FILE" <<EOF
 DOMAIN=$DOMAIN
+TUNNEL_TOKEN=$TUNNEL_TOKEN
 ACME_EMAIL=$ACME_EMAIL
 HTTP_PORT=$HTTP_PORT
 ADMIN_EMAIL=$ADMIN_EMAIL
@@ -164,6 +171,18 @@ services:
       - freescout_logs:/logs
     networks: [freescout]
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: freescout-cloudflared
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - freescout
+    networks: [freescout]
+
   freescout-db:
     image: mariadb:lts
     container_name: freescout-db
@@ -194,6 +213,9 @@ EOF
 
 deploy() {
   cd "$INSTALL_DIR"
+  load_env
+  # cloudflared només s'aixeca si s'ha indicat el token del túnel
+  if [[ -n "${TUNNEL_TOKEN:-}" ]]; then export COMPOSE_PROFILES=tunnel; else unset COMPOSE_PROFILES; fi
   info "Descarregant imatges (pull)..."
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p freescout pull
   info "Aixecant serveis..."
@@ -228,5 +250,10 @@ echo "  Admin:     $ADMIN_EMAIL"
 echo "  Password:  $ADMIN_PASS"
 echo "  Config:    $ENV_FILE (permisos 600)"
 echo
-echo "Túnel de Cloudflare: publica el hostname $DOMAIN cap al servei  http://localhost:$HTTP_PORT"
+if [[ -n "${TUNNEL_TOKEN:-}" ]]; then
+  echo "Túnel: cloudflared ja corre (contenidor freescout-cloudflared)."
+  echo "  A Cloudflare > Tunnels > Public Hostname: $DOMAIN -> HTTP -> freescout-app:80"
+else
+  echo "Túnel: publica $DOMAIN cap a http://localhost:$HTTP_PORT (cloudflared extern)"
+fi
 echo "Actualitzar:  sudo $0 --update"

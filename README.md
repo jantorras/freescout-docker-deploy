@@ -16,5 +16,6 @@ sudo ./deploy-freescout.sh --reconfigure # canvia domini/email
 sudo ./deploy-freescout.sh --status
 ```
 
-Túnel: afegeix un Public Hostname al túnel amb el domini cap a `http://localhost:8080`.
-(Si `cloudflared` corre en un contenidor, connecta'l a la xarxa `freescout` i apunta a `http://freescout-app:80`.)
+Túnel: durant la instal·lació et demana el **token del túnel** (Zero Trust > Tunnels > el teu túnel > Docker,
+el valor després de `--token`) i aixeca `cloudflared` com a contenidor. Al Public Hostname del túnel:
+`HTTP` → `freescout-app:80`. Si deixes el token buit, no s'instal·la cloudflared i FreeScout queda a `127.0.0.1:8080`.
