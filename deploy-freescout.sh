@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Desplegament autom脿tic de FreeScout (nfrastack/freescout) + MariaDB + Traefik
-# HTTPS autom脿tic amb Let's Encrypt via Cloudflare DNS-01 (token d'API).
+# Desplegament autom脿tic de FreeScout (nfrastack/freescout) + MariaDB
+# darrere d'un t煤nel de Cloudflare (HTTPS el posa Cloudflare, sense ports 80/443).
 #
 # 脷s:
 #   sudo ./deploy-freescout.sh             # instal路la o actualitza (idempotent)
@@ -66,11 +66,11 @@ ensure_docker() {
     ok "Docker ja instal路lat: $(docker --version)"
   fi
   if ! docker compose version >/dev/null 2>&1; then
-    info "Falta el plugin 'docker compose'. Instal穕ant..."
+    info "Falta el plugin 'docker compose'. Instal路lant..."
     apt-get update -y || true
     # 1) repo oficial de Docker, 2) paquet d'Ubuntu, 3) binari oficial de GitHub
     apt-get install -y docker-compose-plugin       || apt-get install -y docker-compose-v2       || install_compose_binary
-    docker compose version >/dev/null 2>&1 || die "No s'ha pogut instal穕ar 'docker compose'."
+    docker compose version >/dev/null 2>&1 || die "No s'ha pogut instal路lar 'docker compose'."
   fi
   command -v openssl >/dev/null 2>&1 || { apt-get update -y; apt-get install -y openssl; }
   systemctl is-active --quiet docker || systemctl enable --now docker
@@ -97,12 +97,8 @@ configure() {
   if [[ "$MODE" == "reconfigure" || -z "${DOMAIN:-}" ]]; then
     ask DOMAIN "Nom de domini (p.ex. suport.exemple.com)"
   fi
-  if [[ "$MODE" == "reconfigure" || -z "${CF_DNS_API_TOKEN:-}" ]]; then
-    echo "Token d'API de Cloudflare amb permisos: Zone:DNS:Edit + Zone:Zone:Read"
-    ask CF_DNS_API_TOKEN "Token de Cloudflare" secret
-  fi
   if [[ "$MODE" == "reconfigure" || -z "${ACME_EMAIL:-}" ]]; then
-    ask ACME_EMAIL "Email per a Let's Encrypt"
+    ask ACME_EMAIL "Email de l'administrador de FreeScout"
   fi
   if [[ "$MODE" == "reconfigure" || -z "${ADMIN_EMAIL:-}" ]]; then
     ADMIN_EMAIL="$ACME_EMAIL"
@@ -113,13 +109,14 @@ configure() {
   DB_ROOT_PASS="${DB_ROOT_PASS:-$(rand 28)}"
   ADMIN_PASS="${ADMIN_PASS:-$(rand 20)}"
   FREESCOUT_TAG="${FREESCOUT_TAG:-latest}"
+  HTTP_PORT="${HTTP_PORT:-8080}"   # nom茅s a 127.0.0.1, per al t煤nel de Cloudflare
   TZ_NAME="${TZ_NAME:-$(cat /etc/timezone 2>/dev/null || echo UTC)}"
 
   umask 077
   cat > "$ENV_FILE" <<EOF
 DOMAIN=$DOMAIN
-CF_DNS_API_TOKEN=$CF_DNS_API_TOKEN
 ACME_EMAIL=$ACME_EMAIL
+HTTP_PORT=$HTTP_PORT
 ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASS=$ADMIN_PASS
 DB_PASS=$DB_PASS
@@ -134,32 +131,6 @@ EOF
 write_compose() {
   cat > "$COMPOSE_FILE" <<'EOF'
 services:
-  traefik:
-    image: traefik:v3
-    container_name: freescout-traefik
-    restart: unless-stopped
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --certificatesresolvers.cf.acme.email=${ACME_EMAIL}
-      - --certificatesresolvers.cf.acme.storage=/letsencrypt/acme.json
-      - --certificatesresolvers.cf.acme.dnschallenge=true
-      - --certificatesresolvers.cf.acme.dnschallenge.provider=cloudflare
-      - --certificatesresolvers.cf.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
-    environment:
-      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik_letsencrypt:/letsencrypt
-    networks: [freescout]
-
   freescout:
     image: docker.io/nfrastack/freescout:${FREESCOUT_TAG}
     container_name: freescout-app
@@ -186,16 +157,11 @@ services:
       - FREESCOUT_APP_TRUSTED_PROXIES=*
       - FREESCOUT_APP_FORCE_HTTPS=true
       - FREESCOUT_APP_TIMEZONE=${TZ_NAME}
+    ports:
+      - "127.0.0.1:${HTTP_PORT}:80"
     volumes:
       - freescout_data:/data
       - freescout_logs:/logs
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=freescout_freescout
-      - traefik.http.routers.freescout.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.freescout.entrypoints=websecure
-      - traefik.http.routers.freescout.tls.certresolver=cf
-      - traefik.http.services.freescout.loadbalancer.server.port=80
     networks: [freescout]
 
   freescout-db:
@@ -220,7 +186,6 @@ networks:
   freescout:
 
 volumes:
-  traefik_letsencrypt:
   freescout_data:
   freescout_logs:
   freescout_db:
@@ -258,10 +223,10 @@ deploy
 load_env
 echo
 ok "FreeScout desplegat."
-echo "  URL:       https://$DOMAIN   (el certificat i la 1a c脿rrega poden trigar 2-5 min)"
+echo "  URL:       https://$DOMAIN   (la 1a c脿rrega pot trigar 2-5 min)"
 echo "  Admin:     $ADMIN_EMAIL"
 echo "  Password:  $ADMIN_PASS"
 echo "  Config:    $ENV_FILE (permisos 600)"
 echo
-echo "Recorda: al DNS de Cloudflare, crea un registre A de $DOMAIN cap a la IP d'aquest servidor"
+echo "T煤nel de Cloudflare: publica el hostname $DOMAIN cap al servei  http://localhost:$HTTP_PORT"
 echo "Actualitzar:  sudo $0 --update"
