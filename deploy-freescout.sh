@@ -50,6 +50,15 @@ install_docker() {
   systemctl enable --now docker
 }
 
+install_compose_binary() {
+  local arch; arch="$(uname -m)"
+  local dest=/usr/local/lib/docker/cli-plugins
+  info "Descarregant docker compose (binari oficial)..."
+  install -m 0755 -d "$dest"
+  curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${arch}"     -o "$dest/docker-compose" || return 1
+  chmod +x "$dest/docker-compose"
+}
+
 ensure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     install_docker
@@ -57,9 +66,11 @@ ensure_docker() {
     ok "Docker ja instalÂ·lat: $(docker --version)"
   fi
   if ! docker compose version >/dev/null 2>&1; then
-    info "Falta el plugin 'docker compose'. InstalÂ·lant..."
-    apt-get update -y && apt-get install -y docker-compose-plugin \
-      || die "No s'ha pogut instalÂ·lar docker-compose-plugin (repo oficial de Docker?)."
+    info "Falta el plugin 'docker compose'. Instal·lant..."
+    apt-get update -y || true
+    # 1) repo oficial de Docker, 2) paquet d'Ubuntu, 3) binari oficial de GitHub
+    apt-get install -y docker-compose-plugin       || apt-get install -y docker-compose-v2       || install_compose_binary
+    docker compose version >/dev/null 2>&1 || die "No s'ha pogut instal·lar 'docker compose'."
   fi
   command -v openssl >/dev/null 2>&1 || { apt-get update -y; apt-get install -y openssl; }
   systemctl is-active --quiet docker || systemctl enable --now docker
